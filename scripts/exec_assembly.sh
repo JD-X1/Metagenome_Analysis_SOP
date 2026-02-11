@@ -126,3 +126,37 @@ log "Bloom filtering completed. Processed files: ${#BLOOM_FILTERED[@]}"
 
 # PHASE 2: SPADES Assembly
 
+log "Checking for spades singularity image at ${SPADES_IMAGE} ..."
+
+if [[ ! -f "${SPADES_IMAGE}" ]]; then
+    log "[ERROR] SPADES singularity image not found at ${SPADES_IMAGE}. Please ensure the image is built and available."
+    exit 1
+elif [[ -f "${SPADES_IMAGE}" ]]; then
+    log "[INFO] SPADES singularity image found at ${SPADES_IMAGE}."
+else
+    log "[ERROR] Check that the singularity image path is correct"
+    exit 1
+fi
+
+for i in "${BLOOM_FILTERED_INT[@]}"; do
+    log "Running SPADES Assembly on ${i} ..."
+
+    BASE="$(basename "${i}" _bbcms_interleaved.fastq.gz)"
+    SAMPLE_OUT_DIR="${OUT_DIR}/${BASE}" # should be same as bloom sample dir
+    SAMPLE_TMP_DIR="${OUT_DIR}/${BASE}/tmp"
+
+    singularity exec --cleanenv \
+      --bind "$PWD:/data" \
+      --pwd /data \
+      "${SPADES_IMAGE}" \
+      spades.py \
+      -m ${SPADES_MEM} \
+      -t ${SLURM_NTASKS_PER_NODE:-8} \
+      --tmp-dir ${SAMPLE_TMP_DIR} \
+      -o "${SAMPLE_OUT_DIR}/spades_output" \
+      --only-assembler \
+      -k 33,55,77,99,127 \
+      --meta \
+      -1 "${SAMPLE_OUT_DIR}/bbcms_output.FWD.fastq.gz" \
+      -2 "${SAMPLE_OUT_DIR}/bbcms_output.REV.fastq.gz"
+done
