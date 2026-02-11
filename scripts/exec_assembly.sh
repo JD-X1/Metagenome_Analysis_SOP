@@ -73,7 +73,17 @@ for i in "${FILTERED_FASTQS[@]}"; do
     SPADES_IN2="${SAMPLE_OUT_DIR}/bbcms_output.REV.fastq.gz"
 
     mkdir -p "${SAMPLE_OUT_DIR}"
-    
+
+    INTERLEAVED_OUT="${SAMPLE_OUT_DIR}/${BASE}_bbcms_interleaved.fastq.gz"
+    if [[ -f "${INTERLEAVED_OUT}" && -f "${SPADES_IN1}" && -f "${SPADES_IN2}" ]]; then
+        log "[SKIP] BBCMS outputs already exist for ${BASE}, skipping."
+        BLOOM_FILTERED+=( "${INTERLEAVED_OUT}" )
+        continue
+    elif [[ -f "${SPADES_IN1}" || -f "${SPADES_IN2}" ]] && [[ ! -f "${INTERLEAVED_OUT}" ]]; then
+        log "[ERROR] Paired outputs exist but interleaved file ${INTERLEAVED_OUT} is missing for ${BASE}. Possible incomplete run."
+        exit 1
+    fi
+
     log "[RUN] bbcms.sh: $BASE"
 
     singularity exec --cleanenv \
