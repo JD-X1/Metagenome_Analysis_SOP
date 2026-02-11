@@ -39,7 +39,8 @@ INPUT_DIR=$1 # expects interleaved filter files
 OUT_DIR=$2
 
 # java virt max should be set to 80% of available memory
-MEM_FOR_JAVA_TOOLS=-Xmx160g
+MEM_FOR_BLOOM=-Xmx160g
+MEM_FOR_SPADES="800"
 BBTOOLS_IMAGE="bbtools_38.86.sif"
 SPADES_IMAGE="spades_3.15.2.sif"
 
@@ -99,7 +100,7 @@ for i in "${FILTERED_FASTQS[@]}"; do
       --bind "$PWD:/data" \
       --pwd /data \
       "${BBTOOLS_IMAGE}" \
-      bbcms.sh ${MEM_FOR_JAVA_TOOLS} \
+      bbcms.sh ${MEM_FOR_BLOOM} \
         mincount=2 \
         highcountfraction=0.6 \
         in="${i}" \
@@ -129,28 +130,29 @@ log "Bloom filtering completed. Processed files: ${#BLOOM_FILTERED[@]}"
 log "Checking for spades singularity image at ${SPADES_IMAGE} ..."
 
 if [[ ! -f "${SPADES_IMAGE}" ]]; then
-    log "[ERROR] SPADES singularity image not found at ${SPADES_IMAGE}. Please ensure the image is built and available."
+    log "[ERROR] SPADES singularity image not found at ${SPADES_IMAGE}."
+    log "[ERROR] Please ensure the image is built and available."
+    log "[ERROR] And check that the singularity image path is correct"
+    log "[ERROR] Exiting with code 1."
     exit 1
-elif [[ -f "${SPADES_IMAGE}" ]]; then
-    log "[INFO] SPADES singularity image found at ${SPADES_IMAGE}."
 else
-    log "[ERROR] Check that the singularity image path is correct"
-    exit 1
+    log "[INFO] SPADES singularity image found at ${SPADES_IMAGE}."
 fi
 
-for i in "${BLOOM_FILTERED_INT[@]}"; do
+for i in "${BLOOM_FILTERED[@]}"; do
     log "Running SPADES Assembly on ${i} ..."
 
     BASE="$(basename "${i}" _bbcms_interleaved.fastq.gz)"
     SAMPLE_OUT_DIR="${OUT_DIR}/${BASE}" # should be same as bloom sample dir
     SAMPLE_TMP_DIR="${OUT_DIR}/${BASE}/tmp"
+    mkdir -p "${SAMPLE_TMP_DIR}"
 
     singularity exec --cleanenv \
       --bind "$PWD:/data" \
       --pwd /data \
       "${SPADES_IMAGE}" \
       spades.py \
-      -m ${SPADES_MEM} \
+      -m ${MEM_FOR_SPADES} \
       -t ${SLURM_NTASKS_PER_NODE:-8} \
       --tmp-dir ${SAMPLE_TMP_DIR} \
       -o "${SAMPLE_OUT_DIR}/spades_output" \
