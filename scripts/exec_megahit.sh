@@ -1,20 +1,18 @@
 #!/usr/bin/bash -l
 
 module load singularity
-module load openjdk/17.0.5_8
 
 
-######################################################
-# three phases of execution:
-# 1. Bloom Filtering with bbtools
-# 2. SPADES
-# 3. fungalrelease.sh
-######################################################
-# Usage: ./exec_assembly.sh <input_dir> <output_dir>
-######################################################
+# MEGAHIT metagenomic assembly script. So arguably you could
+# get away with just running exec_assembly.sh, but if you
+# want to be thorough and guage the quality of resulting assemblies,
+# its best to run exec_megahit.sh and exec_
+
+# Usage: ./exec_megahit.sh <input_dir> <output_dir>
+# Input: interleaved filtered fastq files
+#        (*_interleaved_filtered.fastq.gz)
 
 
-# Phase 0: Set Up
 set -Eeuo pipefail
 shopt -s nullglob
 
@@ -34,131 +32,67 @@ if [[ $# -ne 2 ]]; then
   exit 2
 fi
 
-# Configuration, be sure you know your paths!:
-INPUT_DIR=$1 # expects interleaved filter files
+INPUT_DIR=$1
 OUT_DIR=$2
 
-# java virt max should be set to 80% of available memory
-MEM_FOR_BLOOM=-Xmx160g
-MEM_FOR_SPADES="800"
-SPADES_THREADS=48 
-MEGAHIT_IMG="megahit.sif"
+MEGAHIT_THREADS=${SLURM_CPUS_PER_TASK:-48}
+MEGAHIT_MEM=${MEGAHIT_MEM:-0.9}
+MEGAHIT_IMAGE="megahit.sif"
 
-
+if [[ ! -f "${MEGAHIT_IMAGE}" ]]; then
+    log "[ERROR] MEGAHIT singularity image not found at ${MEGAHIT_IMAGE}."
+    exit 1
+fi
 
 FILTERED_FASTQS=( ${INPUT_DIR}/*_interleaved_filtered.fastq.gz )
-mkdir -p ${OUT_DIR}
-
+mkdir -p "${OUT_DIR}"
 
 if [[ ${#FILTERED_FASTQS[@]} -eq 0 ]]; then
-  log "[ERROR] No interleaved files were produced in ${INPUT_DIR}/"
+  log "[ERROR] No interleaved filtered files found in ${INPUT_DIR}/"
   exit 1
 fi
 
-touch readlen.txt
-
-# Phase 1: Bloom filtering with BBTools
-
-BLOOM_FILTERED=()
-
-# Dependencies: BBTools, Java 17
-
 for i in "${FILTERED_FASTQS[@]}"; do
-    log "Running BBCMS & Assembly on ${i} ..."
-
     BASE="$(basename "${i}" _interleaved_filtered.fastq.gz)"
+    SAMPLE_OUT_DIR="${OUT_DIR}/${BASE}/megahit_output"
+    SAMPLE_OUT_SENS="${SAMPLE_OUT_DIR}/sensitive"
+    SAMPLE_OUT_LARGE="${SAMPLE_OUT_DIR}/large"
 
-    SAMPLE_OUT_DIR="${OUT_DIR}/${BASE}"
-    SAMPLE_COUNTS="${SAMPLE_OUT_DIR}/counts.metadata.json"
-
-    SPADES_IN1="${SAMPLE_OUT_DIR}/bbcms_output.FWD.fastq.gz"
-    SPADES_IN2="${SAMPLE_OUT_DIR}/bbcms_output.REV.fastq.gz"
-
-    INTERLEAVED_OUT="${SAMPLE_OUT_DIR}/${BASE}_bbcms_interleaved.fastq.gz"
-    if [[ -f "${INTERLEAVED_OUT}" && -f "${SPADES_IN1}" && -f "${SPADES_IN2}" ]]; then
-        log "[SKIP] BBCMS outputs already exist for ${BASE}, skipping."
-        BLOOM_FILTERED+=( "${INTERLEAVED_OUT}" )
+    if [[ -f "${SAMPLE_OUT_DIR}/final.contigs.fa" ]]; then
+        log "[SKIP] MEGAHIT output already exists for ${BASE}, skipping."
         continue
-    elif [[ -f "${SPADES_IN1}" || -f "${SPADES_IN2}" ]] && [[ ! -f "${INTERLEAVED_OUT}" ]]; then
-        log "[ERROR] Paired outputs exist but interleaved file ${INTERLEAVED_OUT} is missing for ${BASE}. Possible incomplete run."
-        exit 1
     fi
-    
-    mkdir -p "${SAMPLE_OUT_DIR}"
-    log "[RUN] bbcms.sh: $BASE"
 
-    singularity exec --cleanenv \
-      --bind "$PWD:/data" \
-      --pwd /data \
-      "${BBTOOLS_IMAGE}" \
-      readlength.sh -Xmx3g \
-      in="${i}" \
-      out="${SAMPLE_OUT_DIR}/${BASE}_readlength.txt" \
-      overwrite
+    rm -rf "${SAMPLE_OUT_DIR}"
 
+    log "[RUN] megahit: ${BASE}"
+
+    # meta-sensitive
     singularity exec --cleanenv \
       --bind "$PWD:/data" \
       --pwd /data \
-      "${BBTOOLS_IMAGE}" \
-      bbcms.sh ${MEM_FOR_BLOOM} \
-        mincount=2 \
-        highcountfraction=0.6 \
-        in="${i}" \
-        out1="${SPADES_IN1}" \
-        out2="${SPADES_IN2}" \
-        1> "${SAMPLE_OUT_DIR}/bbcms.${BASE}.log" \
-        2> "${SAMPLE_OUT_DIR}/bbcms.${BASE}.err"
-    
+      "${MEGAHIT_IMAGE}" \
+      megahit \
+      --12 "${i}" \
+      -t "${MEGAHIT_THREADS}" \
+      -m "${MEGAHIT_MEM}" \
+      --min-count 2 \
+      --k-list 1,29,39,49,59,69,79,89,99,129,141 \
+      -o "${SAMPLE_OUT_SENS}"
+
+      # meta-large
     singularity exec --cleanenv \
       --bind "$PWD:/data" \
       --pwd /data \
-      "${BBTOOLS_IMAGE}" \
-      reformat.sh -Xmx5g \
-        in1="${SPADES_IN1}" \
-        in2="${SPADES_IN2}" \
-        out="${SAMPLE_OUT_DIR}/${BASE}_bbcms_interleaved.fastq.gz" \
-        overwrite=t
-    BLOOM_FILTERED+=( "${SAMPLE_OUT_DIR}/${BASE}_bbcms_interleaved.fastq.gz" )
-    grep Uniq ${SAMPLE_OUT_DIR}/bbcms.${BASE}.err | awk '{print $NF}' > "${SAMPLE_OUT_DIR}/${BASE}_unique31mer.txt"
-    
+      "${MEGAHIT_IMAGE}" \
+      megahit \
+      --12 "${i}" \
+      -t "${MEGAHIT_THREADS}" \
+      -m "${MEGAHIT_MEM}" \
+      --k-min 27 \
+      --k-max 127 \
+      --k-step 10 \
+      -o "${SAMPLE_OUT_LARGE}"
 done
 
-log "Bloom filtering completed. Processed files: ${#BLOOM_FILTERED[@]}"
-
-# PHASE 2: SPADES Assembly
-
-log "Checking for spades singularity image at ${SPADES_IMAGE} ..."
-
-if [[ ! -f "${SPADES_IMAGE}" ]]; then
-    log "[ERROR] SPADES singularity image not found at ${SPADES_IMAGE}."
-    log "[ERROR] Please ensure the image is built and available."
-    log "[ERROR] And check that the singularity image path is correct"
-    log "[ERROR] Exiting with code 1."
-    exit 1
-else
-    log "[INFO] SPADES singularity image found at ${SPADES_IMAGE}."
-fi
-
-for i in "${BLOOM_FILTERED[@]}"; do
-    log "Running SPADES Assembly on ${i} ..."
-
-    BASE="$(basename "${i}" _bbcms_interleaved.fastq.gz)"
-    SAMPLE_OUT_DIR="${OUT_DIR}/${BASE}" # should be same as bloom sample dir
-    SAMPLE_TMP_DIR="${OUT_DIR}/${BASE}/tmp"
-    mkdir -p "${SAMPLE_TMP_DIR}"
-
-    singularity exec --cleanenv \
-      --bind "$PWD:/data" \
-      --pwd /data \
-      "${SPADES_IMAGE}" \
-      spades.py \
-      -m ${MEM_FOR_SPADES} \
-      -t ${SPADES_THREADS} \
-      --tmp-dir ${SAMPLE_TMP_DIR} \
-      -o "${SAMPLE_OUT_DIR}/spades_output" \
-      --only-assembler \
-      -k 33,55,77,99,127 \
-      --meta \
-      -1 "${SAMPLE_OUT_DIR}/bbcms_output.FWD.fastq.gz" \
-      -2 "${SAMPLE_OUT_DIR}/bbcms_output.REV.fastq.gz"
-done
+log "MEGAHIT assembly completed."
