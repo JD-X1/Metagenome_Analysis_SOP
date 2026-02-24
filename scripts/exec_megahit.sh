@@ -1,6 +1,6 @@
 #!/usr/bin/bash -l
 
-module load singularity
+module load singularityce
 
 
 # MEGAHIT metagenomic assembly script. So arguably you could
@@ -10,8 +10,6 @@ module load singularity
 
 # Usage: ./exec_megahit.sh <input_dir> <output_dir>
 # Input: interleaved filtered fastq files
-#        (*_interleaved_filtered.fastq.gz)
-
 
 set -Eeuo pipefail
 shopt -s nullglob
@@ -32,11 +30,11 @@ if [[ $# -ne 2 ]]; then
   exit 2
 fi
 
-INPUT_DIR=$1
-OUT_DIR=$2
+INPUT_DIR="$(realpath -m "$1")"
+OUT_DIR="$(realpath -m "$2")"
 
-MEGAHIT_THREADS=${SLURM_CPUS_PER_TASK:-48}
-MEGAHIT_MEM=${MEGAHIT_MEM:-0.9}
+MEGAHIT_THREADS=40
+MEGAHIT_MEM=858993459200
 MEGAHIT_IMAGE="megahit.sif"
 
 if [[ ! -f "${MEGAHIT_IMAGE}" ]]; then
@@ -52,6 +50,10 @@ if [[ ${#FILTERED_FASTQS[@]} -eq 0 ]]; then
   exit 1
 fi
 
+GLOBAL_TMP_DIR="$(mktemp -d "${PWD}/megahit_tmp.XXXXXXXXXX")"
+trap 'rc=$?; rm -rf "${GLOBAL_TMP_DIR}"; log "[ERROR] line ${LINENO}: command failed: ${BASH_COMMAND} (exit=${rc})"; exit ${rc}' ERR
+trap 'rm -rf "${GLOBAL_TMP_DIR}"' EXIT
+
 for i in "${FILTERED_FASTQS[@]}"; do
     BASE="$(basename "${i}" _interleaved_filtered.fastq.gz)"
     SAMPLE_OUT_DIR="${OUT_DIR}/${BASE}/megahit_output"
@@ -65,34 +67,55 @@ for i in "${FILTERED_FASTQS[@]}"; do
 
     rm -rf "${SAMPLE_OUT_DIR}"
 
-    log "[RUN] megahit: ${BASE}"
+    SAMPLE_TMP_DIR="${GLOBAL_TMP_DIR}/${BASE}"
+    mkdir -p "${SAMPLE_TMP_DIR}"
+    DECOMPRESSED_FASTQ="${SAMPLE_TMP_DIR}/${BASE}_interleaved_filtered.fastq"
+
+    log "[DECOMPRESS] ${BASE}"
+    pigz -dc "${i}" > "${DECOMPRESSED_FASTQ}" \
+        || gzip -dc "${i}" > "${DECOMPRESSED_FASTQ}"
+
+    CONTAINER_FASTQ="/data/${DECOMPRESSED_FASTQ#${PWD}/}"
+    CONTAINER_OUT_SENS="/out/${BASE}/megahit_output/sensitive"
+    CONTAINER_OUT_LARGE="/out/${BASE}/megahit_output/large"
+
+    #mkdir -p "${SAMPLE_OUT_SENS}" "${SAMPLE_OUT_LARGE}"
+    mkdir -p ${SAMPLE_OUT_DIR}
+
+    log "[RUN] megahit sensitive: ${BASE}"
 
     # meta-sensitive
     singularity exec --cleanenv \
-      --bind "$PWD:/data" \
+      --bind "${PWD}:/data" \
+      --bind "${OUT_DIR}:/out" \
       --pwd /data \
       "${MEGAHIT_IMAGE}" \
       megahit \
-      --12 "${i}" \
+      --12 "${CONTAINER_FASTQ}" \
       -t "${MEGAHIT_THREADS}" \
       -m "${MEGAHIT_MEM}" \
       --min-count 2 \
-      --k-list 1,29,39,49,59,69,79,89,99,129,141 \
-      -o "${SAMPLE_OUT_SENS}"
+      --k-list 21,29,39,49,59,69,79,89,99,109,129,141 \
+      -o "${CONTAINER_OUT_SENS}"
 
-      # meta-large
+    log "[RUN] megahit large: ${BASE}"
+
+    # meta-large
     singularity exec --cleanenv \
-      --bind "$PWD:/data" \
+      --bind "${PWD}:/data" \
+      --bind "${OUT_DIR}:/out" \
       --pwd /data \
       "${MEGAHIT_IMAGE}" \
       megahit \
-      --12 "${i}" \
+      --12 "${CONTAINER_FASTQ}" \
       -t "${MEGAHIT_THREADS}" \
       -m "${MEGAHIT_MEM}" \
-      --k-min 27 \
-      --k-max 127 \
+      --k-min 28 \
+      --k-max 128 \
       --k-step 10 \
-      -o "${SAMPLE_OUT_LARGE}"
+      -o "${CONTAINER_OUT_LARGE}"
+
+    rm -rf "${SAMPLE_TMP_DIR}"
 done
 
 log "MEGAHIT assembly completed."
