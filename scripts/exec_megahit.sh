@@ -60,12 +60,29 @@ for i in "${FILTERED_FASTQS[@]}"; do
     SAMPLE_OUT_SENS="${SAMPLE_OUT_DIR}/sensitive"
     SAMPLE_OUT_LARGE="${SAMPLE_OUT_DIR}/large"
 
-    if [[ -f "${SAMPLE_OUT_DIR}/final.contigs.fa" ]]; then
-        log "[SKIP] MEGAHIT output already exists for ${BASE}, skipping."
-        continue
+    RUN_SENS=true
+    RUN_LARGE=true
+
+    if [[ -f "${SAMPLE_OUT_SENS}/final.contigs.fa" ]]; then
+        log "[SKIP] megahit sensitive already complete for ${BASE}."
+        RUN_SENS=false
+    elif [[ -d "${SAMPLE_OUT_SENS}" ]]; then
+        log "[WARN] Incomplete sensitive run detected for ${BASE}, clearing output dir."
+        rm -rf "${SAMPLE_OUT_SENS}"
     fi
 
-    rm -rf "${SAMPLE_OUT_DIR}"
+    if [[ -f "${SAMPLE_OUT_LARGE}/final.contigs.fa" ]]; then
+        log "[SKIP] megahit large already complete for ${BASE}."
+        RUN_LARGE=false
+    elif [[ -d "${SAMPLE_OUT_LARGE}" ]]; then
+        log "[WARN] Incomplete large run detected for ${BASE}, clearing output dir."
+        rm -rf "${SAMPLE_OUT_LARGE}"
+    fi
+
+    if [[ "${RUN_SENS}" == false && "${RUN_LARGE}" == false ]]; then
+        log "[SKIP] Both MEGAHIT runs already complete for ${BASE}, skipping."
+        continue
+    fi
 
     SAMPLE_TMP_DIR="${GLOBAL_TMP_DIR}/${BASE}"
     mkdir -p "${SAMPLE_TMP_DIR}"
@@ -79,41 +96,40 @@ for i in "${FILTERED_FASTQS[@]}"; do
     CONTAINER_OUT_SENS="/out/${BASE}/megahit_output/sensitive"
     CONTAINER_OUT_LARGE="/out/${BASE}/megahit_output/large"
 
-    #mkdir -p "${SAMPLE_OUT_SENS}" "${SAMPLE_OUT_LARGE}"
-    mkdir -p ${SAMPLE_OUT_DIR}
+    mkdir -p "${SAMPLE_OUT_DIR}"
 
-    log "[RUN] megahit sensitive: ${BASE}"
+    if [[ "${RUN_SENS}" == true ]]; then
+        log "[RUN] megahit sensitive: ${BASE}"
+        singularity exec --cleanenv \
+          --bind "${PWD}:/data" \
+          --bind "${OUT_DIR}:/out" \
+          --pwd /data \
+          "${MEGAHIT_IMAGE}" \
+          megahit \
+          --12 "${CONTAINER_FASTQ}" \
+          -t "${MEGAHIT_THREADS}" \
+          -m "${MEGAHIT_MEM}" \
+          --min-count 2 \
+          --k-list 21,29,39,49,59,69,79,89,99,109,129,141 \
+          -o "${CONTAINER_OUT_SENS}"
+    fi
 
-    # meta-sensitive
-    singularity exec --cleanenv \
-      --bind "${PWD}:/data" \
-      --bind "${OUT_DIR}:/out" \
-      --pwd /data \
-      "${MEGAHIT_IMAGE}" \
-      megahit \
-      --12 "${CONTAINER_FASTQ}" \
-      -t "${MEGAHIT_THREADS}" \
-      -m "${MEGAHIT_MEM}" \
-      --min-count 2 \
-      --k-list 21,29,39,49,59,69,79,89,99,109,129,141 \
-      -o "${CONTAINER_OUT_SENS}"
-
-    log "[RUN] megahit large: ${BASE}"
-
-    # meta-large
-    singularity exec --cleanenv \
-      --bind "${PWD}:/data" \
-      --bind "${OUT_DIR}:/out" \
-      --pwd /data \
-      "${MEGAHIT_IMAGE}" \
-      megahit \
-      --12 "${CONTAINER_FASTQ}" \
-      -t "${MEGAHIT_THREADS}" \
-      -m "${MEGAHIT_MEM}" \
-      --k-min 28 \
-      --k-max 128 \
-      --k-step 10 \
-      -o "${CONTAINER_OUT_LARGE}"
+    if [[ "${RUN_LARGE}" == true ]]; then
+        log "[RUN] megahit large: ${BASE}"
+        singularity exec --cleanenv \
+          --bind "${PWD}:/data" \
+          --bind "${OUT_DIR}:/out" \
+          --pwd /data \
+          "${MEGAHIT_IMAGE}" \
+          megahit \
+          --12 "${CONTAINER_FASTQ}" \
+          -t "${MEGAHIT_THREADS}" \
+          -m "${MEGAHIT_MEM}" \
+          --k-min 28 \
+          --k-max 128 \
+          --k-step 10 \
+          -o "${CONTAINER_OUT_LARGE}"
+    fi
 
     rm -rf "${SAMPLE_TMP_DIR}"
 done
