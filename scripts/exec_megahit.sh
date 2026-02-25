@@ -125,8 +125,8 @@ for i in "${FILTERED_FASTQS[@]}"; do
           --12 "${CONTAINER_FASTQ}" \
           -t "${MEGAHIT_THREADS}" \
           -m "${MEGAHIT_MEM}" \
-          --k-min 28 \
-          --k-max 128 \
+          --k-min 27 \
+          --k-max 127 \
           --k-step 10 \
           -o "${CONTAINER_OUT_LARGE}"
     fi
